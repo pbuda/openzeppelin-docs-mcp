@@ -5,42 +5,57 @@
   "type": "module",
   "main": "dist/index.js",
   "bin": {
+    "openzeppelin-docs-mcp": "./dist/index.js",
     "oz-docs-mcp": "./dist/index.js"
   },
+  "files": [
+    "dist",
+    "scripts",
+    "src"
+  ],
   "scripts": {
     "build": "tsup src/index.ts --format esm --dts",
     "build:index": "tsx scripts/build-index.ts",
+    "postinstall": "npm run build:index",
     "dev": "tsx watch src/index.ts",
-    "start": "node dist/index.js"
+    "start": "node dist/index.js",
+    "prepublishOnly": "npm run build"
   },
   "engines": {
     "node": ">=20.0.0"
   },
   "keywords": [
     "mcp",
+    "model-context-protocol",
     "openzeppelin",
     "solidity",
     "ethereum",
-    "documentation"
+    "smart-contracts",
+    "documentation",
+    "claude"
   ],
   "author": "",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/pbuda/openzeppelin-docs-mcp"
+  },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
-    "better-sqlite3": "^11.0.0",
-    "glob": "^10.0.0"
-  },
-  "devDependencies": {
     "@solidity-parser/parser": "^0.18.0",
-    "@types/better-sqlite3": "^7.6.0",
-    "@types/node": "^20.0.0",
+    "better-sqlite3": "^11.0.0",
+    "glob": "^10.0.0",
     "remark-mdx": "^3.0.0",
     "remark-parse": "^11.0.0",
     "simple-git": "^3.0.0",
-    "tsup": "^8.0.0",
     "tsx": "^4.0.0",
-    "typescript": "^5.0.0",
     "unified": "^11.0.0",
     "unist-util-visit": "^5.0.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.0",
+    "@types/node": "^20.0.0",
+    "tsup": "^8.0.0",
+    "typescript": "^5.0.0"
   }
 }

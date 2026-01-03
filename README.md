@@ -12,33 +12,63 @@ An MCP (Model Context Protocol) server that provides offline search and retrieva
 
 ## Installation
 
+### Quick Install (GitHub)
+
+```bash
+claude mcp add --transport stdio openzeppelin-docs -- npx -y github:pbuda/openzeppelin-docs-mcp
+```
+
+The index will be built automatically on first run (~2-3 minutes).
+
+### Install from npm
+
+```bash
+claude mcp add --transport stdio openzeppelin-docs -- npx -y openzeppelin-docs-mcp
+```
+
+### Verify Installation
+
+```bash
+# List configured servers
+claude mcp list
+
+# Check server status (inside Claude Code)
+/mcp
+```
+
+## Building from Source
+
+If you want to build and run locally:
+
 ```bash
 # Clone the repository
-git clone <repo-url>
-cd ozmcp
+git clone https://github.com/pbuda/openzeppelin-docs-mcp.git
+cd openzeppelin-docs-mcp
 
 # Install dependencies
 npm install
 
-# Build the documentation index (fetches repos and indexes ~3000 items)
+# Build the documentation index (fetches repos, ~2-3 min)
 npm run build:index
 
-# Build the TypeScript project
+# Build TypeScript
 npm run build
 ```
 
-## Usage
+### Add Local Build to Claude Code
 
-### With Claude Code
+```bash
+claude mcp add --transport stdio openzeppelin-docs -- node /absolute/path/to/openzeppelin-docs-mcp/dist/index.js
+```
 
-Add to your Claude Code MCP configuration (`~/.claude/claude_desktop_config.json`):
+Or manually add to `~/.claude.json`:
 
 ```json
 {
   "mcpServers": {
     "openzeppelin-docs": {
       "command": "node",
-      "args": ["/absolute/path/to/ozmcp/dist/index.js"]
+      "args": ["/absolute/path/to/openzeppelin-docs-mcp/dist/index.js"]
     }
   }
 }
