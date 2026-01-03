@@ -5,18 +5,33 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import Database from 'better-sqlite3';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 
 import { searchOzDocsTool, handleSearchOzDocs, type SearchOzDocsArgs } from './tools/search.js';
 import { getOzContractTool, handleGetOzContract, type GetOzContractArgs } from './tools/get-contract.js';
 import { getOzFunctionTool, handleGetOzFunction, type GetOzFunctionArgs } from './tools/get-function.js';
 import { listOzModulesTool, handleListOzModules, type ListOzModulesArgs } from './tools/list-modules.js';
+import { buildIndex } from './indexer/build-index.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-export function createServer(dbPath?: string): Server {
-  // Resolve database path
-  const resolvedDbPath = dbPath || path.resolve(__dirname, '..', 'data', 'oz-docs.db');
+export async function createServer(dbPath?: string): Promise<Server> {
+  // Resolve paths
+  const dataDir = path.resolve(__dirname, '..', 'data');
+  const resolvedDbPath = dbPath || path.join(dataDir, 'oz-docs.db');
+
+  // Check if database exists, if not build it
+  if (!fs.existsSync(resolvedDbPath)) {
+    console.error('Database not found. Building index (this may take 2-3 minutes)...');
+    await buildIndex({
+      dataDir,
+      dbPath: resolvedDbPath,
+      skipFetch: false,
+      force: false,
+    });
+    console.error('Index built successfully.');
+  }
 
   // Open database in readonly mode
   let db: Database.Database;
@@ -24,7 +39,6 @@ export function createServer(dbPath?: string): Server {
     db = new Database(resolvedDbPath, { readonly: true });
   } catch (error) {
     console.error(`Failed to open database at ${resolvedDbPath}`);
-    console.error('Run "npm run build:index" to build the database first.');
     throw error;
   }
 
