@@ -1,4 +1,4 @@
-import type Database from 'better-sqlite3';
+import type { Database } from '../db/schema.js';
 import { listModules, getCategories } from '../db/queries.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 
@@ -29,7 +29,7 @@ export interface ListOzModulesArgs {
   version?: string;
 }
 
-export function handleListOzModules(db: Database.Database, args: ListOzModulesArgs) {
+export function handleListOzModules(db: Database, args: ListOzModulesArgs) {
   const { category = 'all', version = '5.x' } = args;
 
   const modules = listModules(db, category, version);

@@ -1,4 +1,4 @@
-import type Database from 'better-sqlite3';
+import type { Database } from './schema.js';
 import type {
   SearchResult,
   ContractDetails,
@@ -6,6 +6,40 @@ import type {
   ParamInfo,
   ReturnInfo,
 } from '../types.js';
+
+/**
+ * Helper to run a query and get all rows as objects
+ */
+function queryAll<T>(db: Database, sql: string, params: unknown[] = []): T[] {
+  const stmt = db.prepare(sql);
+  if (params.length > 0) {
+    stmt.bind(params);
+  }
+
+  const results: T[] = [];
+  while (stmt.step()) {
+    results.push(stmt.getAsObject() as T);
+  }
+  stmt.free();
+  return results;
+}
+
+/**
+ * Helper to run a query and get the first row as object
+ */
+function queryOne<T>(db: Database, sql: string, params: unknown[] = []): T | undefined {
+  const stmt = db.prepare(sql);
+  if (params.length > 0) {
+    stmt.bind(params);
+  }
+
+  let result: T | undefined;
+  if (stmt.step()) {
+    result = stmt.getAsObject() as T;
+  }
+  stmt.free();
+  return result;
+}
 
 /**
  * Convert natural language query to FTS5 syntax
@@ -20,10 +54,10 @@ export function toFtsQuery(query: string): string {
 }
 
 /**
- * Search documentation using FTS5 with BM25 ranking
+ * Search documentation using FTS4
  */
 export function searchDocs(
-  db: Database.Database,
+  db: Database,
   query: string,
   version: string = '5.x',
   category: string = 'all',
@@ -39,19 +73,18 @@ export function searchDocs(
       d.category,
       d.version,
       d.source_url as sourceUrl,
-      snippet(docs_fts, 1, '**', '**', '...', 40) as snippet,
-      bm25(docs_fts, 1.0, 2.0, 1.0, 1.0) as rank
+      snippet(docs_fts, '**', '**', '...', 1, 40) as snippet,
+      0 as rank
     FROM docs_fts
-    JOIN docs d ON docs_fts.rowid = d.id
+    JOIN docs d ON docs_fts.docid = d.id
     WHERE docs_fts MATCH ?
       AND (? = 'all' OR d.version = ?)
       AND (? = 'all' OR d.category = ?)
-    ORDER BY rank
     LIMIT ?
   `;
 
   try {
-    return db.prepare(sql).all(ftsQuery, version, version, category, category, limit) as SearchResult[];
+    return queryAll<SearchResult>(db, sql, [ftsQuery, version, version, category, category, limit]);
   } catch (error) {
     // FTS query might fail for certain inputs, return empty results
     console.error('FTS search error:', error);
@@ -60,10 +93,10 @@ export function searchDocs(
 }
 
 /**
- * Search members (functions, events, errors) using FTS5
+ * Search members (functions, events, errors) using FTS4
  */
 export function searchMembers(
-  db: Database.Database,
+  db: Database,
   query: string,
   version: string = '5.x',
   limit: number = 10
@@ -86,16 +119,15 @@ export function searchMembers(
       c.name as contractName,
       c.version
     FROM members_fts
-    JOIN members m ON members_fts.rowid = m.id
+    JOIN members m ON members_fts.docid = m.id
     JOIN contracts c ON m.contract_id = c.id
     WHERE members_fts MATCH ?
       AND (? = 'all' OR c.version = ?)
-    ORDER BY bm25(members_fts)
     LIMIT ?
   `;
 
   try {
-    const rows = db.prepare(sql).all(ftsQuery, version, version, limit) as Array<{
+    const rows = queryAll<{
       id: number;
       name: string;
       type: string;
@@ -109,7 +141,7 @@ export function searchMembers(
       exampleCode: string | null;
       contractName: string;
       version: string;
-    }>;
+    }>(db, sql, [ftsQuery, version, version, limit]);
 
     return rows.map(row => ({
       name: row.name,
@@ -133,7 +165,7 @@ export function searchMembers(
  * Get contract with all its members
  */
 export function getContract(
-  db: Database.Database,
+  db: Database,
   name: string,
   version: string = '5.x'
 ): ContractDetails | null {
@@ -151,7 +183,7 @@ export function getContract(
     WHERE name = ? AND version = ?
   `;
 
-  const contract = db.prepare(contractSql).get(name, version) as {
+  let contract = queryOne<{
     id: number;
     name: string;
     type: string;
@@ -160,11 +192,11 @@ export function getContract(
     inheritance: string;
     natspecNotice: string | null;
     sourceUrl: string | null;
-  } | undefined;
+  }>(db, contractSql, [name, version]);
 
   if (!contract) {
     // Try case-insensitive search
-    const fuzzyContract = db.prepare(`
+    contract = queryOne(db, `
       SELECT
         id,
         name,
@@ -176,20 +208,18 @@ export function getContract(
         source_url as sourceUrl
       FROM contracts
       WHERE LOWER(name) = LOWER(?) AND version = ?
-    `).get(name, version) as typeof contract;
+    `, [name, version]);
 
-    if (!fuzzyContract) {
+    if (!contract) {
       return null;
     }
-
-    return buildContractDetails(db, fuzzyContract);
   }
 
   return buildContractDetails(db, contract);
 }
 
 function buildContractDetails(
-  db: Database.Database,
+  db: Database,
   contract: {
     id: number;
     name: string;
@@ -218,7 +248,7 @@ function buildContractDetails(
     ORDER BY type, name
   `;
 
-  const members = db.prepare(membersSql).all(contract.id) as Array<{
+  const members = queryAll<{
     name: string;
     type: string;
     signature: string;
@@ -229,7 +259,7 @@ function buildContractDetails(
     natspecNotice: string | null;
     natspecDev: string | null;
     exampleCode: string | null;
-  }>;
+  }>(db, membersSql, [contract.id]);
 
   const functions: MemberDetails[] = [];
   const events: MemberDetails[] = [];
@@ -285,7 +315,7 @@ function buildContractDetails(
  * Get function details, optionally filtered by contract name
  */
 export function getFunction(
-  db: Database.Database,
+  db: Database,
   functionName: string,
   contractName?: string,
   version: string = '5.x'
@@ -298,7 +328,7 @@ export function getFunction(
   }
 
   let sql: string;
-  let params: (string | undefined)[];
+  let params: unknown[];
 
   if (contractName) {
     sql = `
@@ -340,7 +370,7 @@ export function getFunction(
     params = [functionName, version];
   }
 
-  const rows = db.prepare(sql).all(...params) as Array<{
+  const rows = queryAll<{
     name: string;
     type: string;
     signature: string;
@@ -352,7 +382,7 @@ export function getFunction(
     natspecDev: string | null;
     exampleCode: string | null;
     contractName: string;
-  }>;
+  }>(db, sql, params);
 
   return rows.map(row => ({
     name: row.name,
@@ -372,7 +402,7 @@ export function getFunction(
  * List all contracts/libraries, optionally filtered by category
  */
 export function listModules(
-  db: Database.Database,
+  db: Database,
   category: string = 'all',
   version: string = '5.x'
 ): Array<{
@@ -393,19 +423,14 @@ export function listModules(
     ORDER BY category, name
   `;
 
-  return db.prepare(sql).all(version, category, category) as Array<{
-    name: string;
-    type: string;
-    category: string;
-    description: string | null;
-  }>;
+  return queryAll(db, sql, [version, category, category]);
 }
 
 /**
  * Get all categories with counts
  */
 export function getCategories(
-  db: Database.Database,
+  db: Database,
   version: string = '5.x'
 ): Array<{ category: string; count: number }> {
   const sql = `
@@ -416,5 +441,5 @@ export function getCategories(
     ORDER BY count DESC
   `;
 
-  return db.prepare(sql).all(version) as Array<{ category: string; count: number }>;
+  return queryAll(db, sql, [version]);
 }

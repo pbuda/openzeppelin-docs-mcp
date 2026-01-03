@@ -3,7 +3,6 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
-import Database from 'better-sqlite3';
 import path from 'path';
 import { existsSync } from 'fs';
 import { fileURLToPath } from 'url';
@@ -13,13 +12,14 @@ import { getOzContractTool, handleGetOzContract, type GetOzContractArgs } from '
 import { getOzFunctionTool, handleGetOzFunction, type GetOzFunctionArgs } from './tools/get-function.js';
 import { listOzModulesTool, handleListOzModules, type ListOzModulesArgs } from './tools/list-modules.js';
 import { buildIndex } from './indexer/build-index.js';
+import { openDatabase, type Database } from './db/schema.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // Index status tracking
 let indexStatus: 'ready' | 'building' | 'error' = 'ready';
 let indexError: string | null = null;
-let db: Database.Database | null = null;
+let db: Database | null = null;
 
 // Status tool definition
 const indexStatusTool = {
@@ -65,7 +65,7 @@ function createBuildingResponse(toolName: string) {
   };
 }
 
-function createErrorResponse(toolName: string) {
+function createErrorResponse() {
   return {
     content: [
       {
@@ -87,14 +87,17 @@ export function createServer(dbPath?: string): Server {
 
   // Check if database exists
   if (existsSync(resolvedDbPath)) {
-    // Database exists, open it
-    try {
-      db = new Database(resolvedDbPath, { readonly: true });
-      indexStatus = 'ready';
-    } catch (error) {
-      indexStatus = 'error';
-      indexError = error instanceof Error ? error.message : String(error);
-    }
+    // Database exists, open it asynchronously
+    indexStatus = 'building'; // Temporarily set to building while we load
+    openDatabase(resolvedDbPath)
+      .then((database) => {
+        db = database;
+        indexStatus = 'ready';
+      })
+      .catch((error) => {
+        indexStatus = 'error';
+        indexError = error instanceof Error ? error.message : String(error);
+      });
   } else {
     // Database doesn't exist, start background build
     indexStatus = 'building';
@@ -108,13 +111,11 @@ export function createServer(dbPath?: string): Server {
     })
       .then(() => {
         console.error('Index built successfully.');
-        try {
-          db = new Database(resolvedDbPath, { readonly: true });
-          indexStatus = 'ready';
-        } catch (error) {
-          indexStatus = 'error';
-          indexError = error instanceof Error ? error.message : String(error);
-        }
+        return openDatabase(resolvedDbPath);
+      })
+      .then((database) => {
+        db = database;
+        indexStatus = 'ready';
       })
       .catch((err) => {
         console.error('Index build failed:', err);
@@ -162,7 +163,7 @@ export function createServer(dbPath?: string): Server {
     }
 
     if (indexStatus === 'error' || !db) {
-      return createErrorResponse(name);
+      return createErrorResponse();
     }
 
     try {

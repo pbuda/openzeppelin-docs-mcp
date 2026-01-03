@@ -1,4 +1,4 @@
-import type Database from 'better-sqlite3';
+import type { Database } from '../db/schema.js';
 import { searchDocs, searchMembers } from '../db/queries.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 
@@ -41,7 +41,7 @@ export interface SearchOzDocsArgs {
   limit?: number;
 }
 
-export function handleSearchOzDocs(db: Database.Database, args: SearchOzDocsArgs) {
+export function handleSearchOzDocs(db: Database, args: SearchOzDocsArgs) {
   const { query, version = '5.x', category = 'all', limit = 5 } = args;
 
   // Search documentation

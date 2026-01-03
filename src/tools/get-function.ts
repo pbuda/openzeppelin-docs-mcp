@@ -1,4 +1,4 @@
-import type Database from 'better-sqlite3';
+import type { Database } from '../db/schema.js';
 import { getFunction } from '../db/queries.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 
@@ -28,7 +28,7 @@ export interface GetOzFunctionArgs {
   version?: string;
 }
 
-export function handleGetOzFunction(db: Database.Database, args: GetOzFunctionArgs) {
+export function handleGetOzFunction(db: Database, args: GetOzFunctionArgs) {
   const { function_name, version = '5.x' } = args;
 
   const functions = getFunction(db, function_name, undefined, version);

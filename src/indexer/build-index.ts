@@ -1,7 +1,6 @@
-import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs/promises';
-import { resetDatabase } from '../db/schema.js';
+import { resetDatabase, saveDatabase, type Database } from '../db/schema.js';
 import { fetchDocs, getReposPaths } from './fetch-docs.js';
 import { parseMdxFiles } from './parse-mdx.js';
 import { parseSolidityFiles } from './parse-solidity.js';
@@ -31,7 +30,7 @@ export async function buildIndex(options: BuildOptions): Promise<void> {
   // Step 2: Initialize/reset database
   console.log('Step 2: Initializing database...');
   await fs.mkdir(path.dirname(dbPath), { recursive: true });
-  const db = resetDatabase(dbPath);
+  const db = await resetDatabase(dbPath);
   console.log(`Database created at ${dbPath}\n`);
 
   const repos = getReposPaths(dataDir);
@@ -61,18 +60,21 @@ export async function buildIndex(options: BuildOptions): Promise<void> {
   console.log('=== Indexing Complete ===');
   printStats(db);
 
+  // Save and close
+  saveDatabase(db, dbPath);
   db.close();
 }
 
-function insertDocs(db: Database.Database, chunks: DocChunk[]): void {
-  const insert = db.prepare(`
-    INSERT INTO docs (version, category, module, title, content, source_type, source_url, file_path)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `);
+function insertDocs(db: Database, chunks: DocChunk[]): void {
+  // Use a transaction for better performance
+  db.run('BEGIN TRANSACTION');
 
-  const insertMany = db.transaction((chunks: DocChunk[]) => {
+  try {
     for (const chunk of chunks) {
-      insert.run(
+      db.run(`
+        INSERT INTO docs (version, category, module, title, content, source_type, source_url, file_path)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `, [
         chunk.version,
         chunk.category,
         chunk.module,
@@ -81,30 +83,28 @@ function insertDocs(db: Database.Database, chunks: DocChunk[]): void {
         chunk.sourceType,
         chunk.sourceUrl || null,
         chunk.filePath || null
-      );
+      ]);
     }
-  });
 
-  insertMany(chunks);
-  console.log(`Inserted ${chunks.length} documentation chunks`);
+    db.run('COMMIT');
+    console.log(`Inserted ${chunks.length} documentation chunks`);
+  } catch (error) {
+    db.run('ROLLBACK');
+    throw error;
+  }
 }
 
-function insertContracts(db: Database.Database, contracts: ContractInfo[]): void {
-  const insertContract = db.prepare(`
-    INSERT INTO contracts (version, name, type, category, inheritance, natspec_notice, source_url)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `);
+function insertContracts(db: Database, contracts: ContractInfo[]): void {
+  db.run('BEGIN TRANSACTION');
 
-  const insertMember = db.prepare(`
-    INSERT INTO members (contract_id, name, type, signature, visibility, mutability, params, returns, natspec_notice, natspec_dev, example_code)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `);
-
-  const insertAll = db.transaction((contracts: ContractInfo[]) => {
+  try {
     let memberCount = 0;
 
     for (const contract of contracts) {
-      const result = insertContract.run(
+      db.run(`
+        INSERT INTO contracts (version, name, type, category, inheritance, natspec_notice, source_url)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `, [
         contract.version,
         contract.name,
         contract.type,
@@ -112,13 +112,18 @@ function insertContracts(db: Database.Database, contracts: ContractInfo[]): void
         JSON.stringify(contract.inheritance),
         contract.natspecNotice || null,
         contract.sourceUrl || null
-      );
+      ]);
 
-      const contractId = result.lastInsertRowid;
+      // Get the last inserted contract ID
+      const result = db.exec('SELECT last_insert_rowid() as id');
+      const contractId = result[0].values[0][0] as number;
 
       // Insert functions
       for (const func of contract.functions) {
-        insertMember.run(
+        db.run(`
+          INSERT INTO members (contract_id, name, type, signature, visibility, mutability, params, returns, natspec_notice, natspec_dev, example_code)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `, [
           contractId,
           func.name,
           'function',
@@ -130,13 +135,16 @@ function insertContracts(db: Database.Database, contracts: ContractInfo[]): void
           func.natspecNotice || null,
           func.natspecDev || null,
           func.exampleCode || null
-        );
+        ]);
         memberCount++;
       }
 
       // Insert events
       for (const event of contract.events) {
-        insertMember.run(
+        db.run(`
+          INSERT INTO members (contract_id, name, type, signature, visibility, mutability, params, returns, natspec_notice, natspec_dev, example_code)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `, [
           contractId,
           event.name,
           'event',
@@ -148,13 +156,16 @@ function insertContracts(db: Database.Database, contracts: ContractInfo[]): void
           event.natspecNotice || null,
           event.natspecDev || null,
           null
-        );
+        ]);
         memberCount++;
       }
 
       // Insert errors
       for (const error of contract.errors) {
-        insertMember.run(
+        db.run(`
+          INSERT INTO members (contract_id, name, type, signature, visibility, mutability, params, returns, natspec_notice, natspec_dev, example_code)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `, [
           contractId,
           error.name,
           'error',
@@ -166,13 +177,16 @@ function insertContracts(db: Database.Database, contracts: ContractInfo[]): void
           error.natspecNotice || null,
           error.natspecDev || null,
           null
-        );
+        ]);
         memberCount++;
       }
 
       // Insert modifiers
       for (const modifier of contract.modifiers) {
-        insertMember.run(
+        db.run(`
+          INSERT INTO members (contract_id, name, type, signature, visibility, mutability, params, returns, natspec_notice, natspec_dev, example_code)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `, [
           contractId,
           modifier.name,
           'modifier',
@@ -184,29 +198,60 @@ function insertContracts(db: Database.Database, contracts: ContractInfo[]): void
           modifier.natspecNotice || null,
           modifier.natspecDev || null,
           null
-        );
+        ]);
         memberCount++;
       }
     }
 
+    db.run('COMMIT');
     console.log(`Inserted ${contracts.length} contracts with ${memberCount} members`);
-  });
-
-  insertAll(contracts);
+  } catch (error) {
+    db.run('ROLLBACK');
+    throw error;
+  }
 }
 
-function printStats(db: Database.Database): void {
-  const docsCount = db.prepare('SELECT COUNT(*) as count FROM docs').get() as { count: number };
-  const contractsCount = db.prepare('SELECT COUNT(*) as count FROM contracts').get() as { count: number };
-  const membersCount = db.prepare('SELECT COUNT(*) as count FROM members').get() as { count: number };
+function queryOne<T>(db: Database, sql: string): T {
+  const result = db.exec(sql);
+  if (result.length === 0 || result[0].values.length === 0) {
+    return { count: 0 } as T;
+  }
+  const columns = result[0].columns;
+  const values = result[0].values[0];
+  const obj: Record<string, unknown> = {};
+  columns.forEach((col, i) => {
+    obj[col] = values[i];
+  });
+  return obj as T;
+}
 
-  const contractsByVersion = db.prepare(`
+function queryAll<T>(db: Database, sql: string): T[] {
+  const result = db.exec(sql);
+  if (result.length === 0) {
+    return [];
+  }
+  const columns = result[0].columns;
+  return result[0].values.map(row => {
+    const obj: Record<string, unknown> = {};
+    columns.forEach((col, i) => {
+      obj[col] = row[i];
+    });
+    return obj as T;
+  });
+}
+
+function printStats(db: Database): void {
+  const docsCount = queryOne<{ count: number }>(db, 'SELECT COUNT(*) as count FROM docs');
+  const contractsCount = queryOne<{ count: number }>(db, 'SELECT COUNT(*) as count FROM contracts');
+  const membersCount = queryOne<{ count: number }>(db, 'SELECT COUNT(*) as count FROM members');
+
+  const contractsByVersion = queryAll<{ version: string; count: number }>(db, `
     SELECT version, COUNT(*) as count FROM contracts GROUP BY version
-  `).all() as Array<{ version: string; count: number }>;
+  `);
 
-  const membersByType = db.prepare(`
+  const membersByType = queryAll<{ type: string; count: number }>(db, `
     SELECT type, COUNT(*) as count FROM members GROUP BY type
-  `).all() as Array<{ type: string; count: number }>;
+  `);
 
   console.log(`\nDatabase Statistics:`);
   console.log(`  Documentation chunks: ${docsCount.count}`);

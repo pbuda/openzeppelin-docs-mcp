@@ -1,4 +1,4 @@
-import type Database from 'better-sqlite3';
+import type { Database } from '../db/schema.js';
 import { getContract } from '../db/queries.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 
@@ -28,7 +28,7 @@ export interface GetOzContractArgs {
   version?: string;
 }
 
-export function handleGetOzContract(db: Database.Database, args: GetOzContractArgs) {
+export function handleGetOzContract(db: Database, args: GetOzContractArgs) {
   const { name, version = '5.x' } = args;
 
   const contract = getContract(db, name, version);

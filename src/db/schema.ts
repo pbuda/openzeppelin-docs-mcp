@@ -1,4 +1,29 @@
-import Database from 'better-sqlite3';
+import initSqlJs, { Database as SqlJsDatabase } from 'sql.js';
+import { readFileSync, writeFileSync, existsSync } from 'fs';
+import path from 'path';
+import { fileURLToPath, pathToFileURL } from 'url';
+import { createRequire } from 'module';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const require = createRequire(import.meta.url);
+
+// Re-export the Database type for use in other modules
+export type Database = SqlJsDatabase;
+
+// Cache the SQL.js initialization
+let SQL: Awaited<ReturnType<typeof initSqlJs>> | null = null;
+
+async function getSqlJs() {
+  if (!SQL) {
+    // Locate the WASM file from the sql.js package
+    const sqlJsPath = require.resolve('sql.js');
+    const distDir = path.dirname(sqlJsPath);
+    SQL = await initSqlJs({
+      locateFile: (file: string) => path.join(distDir, file)
+    });
+  }
+  return SQL;
+}
 
 export const SCHEMA_SQL = `
 -- Main documentation chunks
@@ -55,96 +80,105 @@ CREATE INDEX IF NOT EXISTS idx_members_type ON members(type);
 `;
 
 export const FTS_SCHEMA_SQL = `
--- FTS5 virtual table for docs full-text search
-CREATE VIRTUAL TABLE IF NOT EXISTS docs_fts USING fts5(
+-- FTS4 virtual table for docs full-text search
+CREATE VIRTUAL TABLE IF NOT EXISTS docs_fts USING fts4(
     title,
     content,
     module,
     category,
-    content='docs',
-    content_rowid='id'
+    content='docs'
 );
 
--- FTS5 virtual table for members full-text search
-CREATE VIRTUAL TABLE IF NOT EXISTS members_fts USING fts5(
+-- FTS4 virtual table for members full-text search
+CREATE VIRTUAL TABLE IF NOT EXISTS members_fts USING fts4(
     name,
     signature,
     natspec_notice,
     natspec_dev,
-    content='members',
-    content_rowid='id'
+    content='members'
 );
 
 -- Triggers to keep FTS indexes in sync
 CREATE TRIGGER IF NOT EXISTS docs_ai AFTER INSERT ON docs BEGIN
-    INSERT INTO docs_fts(rowid, title, content, module, category)
+    INSERT INTO docs_fts(docid, title, content, module, category)
     VALUES (new.id, new.title, new.content, new.module, new.category);
 END;
 
 CREATE TRIGGER IF NOT EXISTS docs_ad AFTER DELETE ON docs BEGIN
-    INSERT INTO docs_fts(docs_fts, rowid, title, content, module, category)
-    VALUES('delete', old.id, old.title, old.content, old.module, old.category);
+    DELETE FROM docs_fts WHERE docid = old.id;
 END;
 
 CREATE TRIGGER IF NOT EXISTS docs_au AFTER UPDATE ON docs BEGIN
-    INSERT INTO docs_fts(docs_fts, rowid, title, content, module, category)
-    VALUES('delete', old.id, old.title, old.content, old.module, old.category);
-    INSERT INTO docs_fts(rowid, title, content, module, category)
+    DELETE FROM docs_fts WHERE docid = old.id;
+    INSERT INTO docs_fts(docid, title, content, module, category)
     VALUES (new.id, new.title, new.content, new.module, new.category);
 END;
 
 CREATE TRIGGER IF NOT EXISTS members_ai AFTER INSERT ON members BEGIN
-    INSERT INTO members_fts(rowid, name, signature, natspec_notice, natspec_dev)
+    INSERT INTO members_fts(docid, name, signature, natspec_notice, natspec_dev)
     VALUES (new.id, new.name, new.signature, new.natspec_notice, new.natspec_dev);
 END;
 
 CREATE TRIGGER IF NOT EXISTS members_ad AFTER DELETE ON members BEGIN
-    INSERT INTO members_fts(members_fts, rowid, name, signature, natspec_notice, natspec_dev)
-    VALUES('delete', old.id, old.name, old.signature, old.natspec_notice, old.natspec_dev);
+    DELETE FROM members_fts WHERE docid = old.id;
 END;
 
 CREATE TRIGGER IF NOT EXISTS members_au AFTER UPDATE ON members BEGIN
-    INSERT INTO members_fts(members_fts, rowid, name, signature, natspec_notice, natspec_dev)
-    VALUES('delete', old.id, old.name, old.signature, old.natspec_notice, old.natspec_dev);
-    INSERT INTO members_fts(rowid, name, signature, natspec_notice, natspec_dev)
+    DELETE FROM members_fts WHERE docid = old.id;
+    INSERT INTO members_fts(docid, name, signature, natspec_notice, natspec_dev)
     VALUES (new.id, new.name, new.signature, new.natspec_notice, new.natspec_dev);
 END;
 `;
 
-export function initializeDatabase(dbPath: string): Database.Database {
-  const db = new Database(dbPath);
+export async function openDatabase(dbPath: string): Promise<SqlJsDatabase> {
+  const SQL = await getSqlJs();
 
-  // Enable foreign keys
-  db.pragma('foreign_keys = ON');
+  if (existsSync(dbPath)) {
+    const buffer = readFileSync(dbPath);
+    return new SQL.Database(buffer);
+  }
+
+  throw new Error(`Database not found at ${dbPath}`);
+}
+
+export async function initializeDatabase(dbPath: string): Promise<SqlJsDatabase> {
+  const SQL = await getSqlJs();
+
+  let db: SqlJsDatabase;
+
+  if (existsSync(dbPath)) {
+    const buffer = readFileSync(dbPath);
+    db = new SQL.Database(buffer);
+  } else {
+    db = new SQL.Database();
+  }
 
   // Execute schema
-  db.exec(SCHEMA_SQL);
-  db.exec(FTS_SCHEMA_SQL);
+  db.run(SCHEMA_SQL);
+  db.run(FTS_SCHEMA_SQL);
+
+  // Save to file
+  saveDatabase(db, dbPath);
 
   return db;
 }
 
-export function resetDatabase(dbPath: string): Database.Database {
-  const db = new Database(dbPath);
+export async function resetDatabase(dbPath: string): Promise<SqlJsDatabase> {
+  const SQL = await getSqlJs();
+  const db = new SQL.Database();
 
-  // Drop all tables
-  db.exec(`
-    DROP TABLE IF EXISTS docs_fts;
-    DROP TABLE IF EXISTS members_fts;
-    DROP TRIGGER IF EXISTS docs_ai;
-    DROP TRIGGER IF EXISTS docs_ad;
-    DROP TRIGGER IF EXISTS docs_au;
-    DROP TRIGGER IF EXISTS members_ai;
-    DROP TRIGGER IF EXISTS members_ad;
-    DROP TRIGGER IF EXISTS members_au;
-    DROP TABLE IF EXISTS members;
-    DROP TABLE IF EXISTS contracts;
-    DROP TABLE IF EXISTS docs;
-  `);
+  // Execute schema (no need to drop since it's a fresh database)
+  db.run(SCHEMA_SQL);
+  db.run(FTS_SCHEMA_SQL);
 
-  // Recreate schema
-  db.exec(SCHEMA_SQL);
-  db.exec(FTS_SCHEMA_SQL);
+  // Save to file
+  saveDatabase(db, dbPath);
 
   return db;
+}
+
+export function saveDatabase(db: SqlJsDatabase, dbPath: string): void {
+  const data = db.export();
+  const buffer = Buffer.from(data);
+  writeFileSync(dbPath, buffer);
 }
