@@ -11,10 +11,11 @@
   "files": [
     "dist",
     "scripts",
-    "src"
+    "src",
+    "tsconfig.json"
   ],
   "scripts": {
-    "build": "tsup src/index.ts --format esm --dts && chmod +x dist/index.js",
+    "build": "tsup src/index.ts --format esm --target node20 && chmod +x dist/index.js",
     "build:index": "tsx scripts/build-index.ts",
     "postinstall": "npm run build && npm run build:index",
     "dev": "tsx watch src/index.ts",
