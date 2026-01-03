@@ -5,7 +5,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import Database from 'better-sqlite3';
 import path from 'path';
-import fs from 'fs';
+import { existsSync } from 'fs';
 import { fileURLToPath } from 'url';
 
 import { searchOzDocsTool, handleSearchOzDocs, type SearchOzDocsArgs } from './tools/search.js';
@@ -16,30 +16,111 @@ import { buildIndex } from './indexer/build-index.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-export async function createServer(dbPath?: string): Promise<Server> {
+// Index status tracking
+let indexStatus: 'ready' | 'building' | 'error' = 'ready';
+let indexError: string | null = null;
+let db: Database.Database | null = null;
+
+// Status tool definition
+const indexStatusTool = {
+  name: 'oz_index_status',
+  description: 'Check if the OpenZeppelin docs index is ready. Call this if other tools report the index is building.',
+  inputSchema: {
+    type: 'object' as const,
+    properties: {},
+  },
+};
+
+function handleIndexStatus() {
+  return {
+    content: [
+      {
+        type: 'text' as const,
+        text: JSON.stringify({
+          status: indexStatus,
+          error: indexError,
+          message:
+            indexStatus === 'building'
+              ? 'Index is building. This takes 2-3 minutes on first run. Please wait and try again.'
+              : indexStatus === 'error'
+                ? `Index build failed: ${indexError}`
+                : 'Index is ready.',
+        }),
+      },
+    ],
+  };
+}
+
+function createBuildingResponse(toolName: string) {
+  return {
+    content: [
+      {
+        type: 'text' as const,
+        text: JSON.stringify({
+          status: 'building',
+          message: `Index is still building (2-3 minutes on first run). Please wait and call oz_index_status to check progress, then retry ${toolName}.`,
+        }),
+      },
+    ],
+  };
+}
+
+function createErrorResponse(toolName: string) {
+  return {
+    content: [
+      {
+        type: 'text' as const,
+        text: JSON.stringify({
+          status: 'error',
+          message: `Index build failed: ${indexError}. Try restarting the server or rebuilding manually.`,
+        }),
+      },
+    ],
+    isError: true,
+  };
+}
+
+export function createServer(dbPath?: string): Server {
   // Resolve paths
   const dataDir = path.resolve(__dirname, '..', 'data');
   const resolvedDbPath = dbPath || path.join(dataDir, 'oz-docs.db');
 
-  // Check if database exists, if not build it
-  if (!fs.existsSync(resolvedDbPath)) {
-    console.error('Database not found. Building index (this may take 2-3 minutes)...');
-    await buildIndex({
+  // Check if database exists
+  if (existsSync(resolvedDbPath)) {
+    // Database exists, open it
+    try {
+      db = new Database(resolvedDbPath, { readonly: true });
+      indexStatus = 'ready';
+    } catch (error) {
+      indexStatus = 'error';
+      indexError = error instanceof Error ? error.message : String(error);
+    }
+  } else {
+    // Database doesn't exist, start background build
+    indexStatus = 'building';
+    console.error('Database not found. Building index in background (2-3 minutes)...');
+
+    buildIndex({
       dataDir,
       dbPath: resolvedDbPath,
       skipFetch: false,
       force: false,
-    });
-    console.error('Index built successfully.');
-  }
-
-  // Open database in readonly mode
-  let db: Database.Database;
-  try {
-    db = new Database(resolvedDbPath, { readonly: true });
-  } catch (error) {
-    console.error(`Failed to open database at ${resolvedDbPath}`);
-    throw error;
+    })
+      .then(() => {
+        console.error('Index built successfully.');
+        try {
+          db = new Database(resolvedDbPath, { readonly: true });
+          indexStatus = 'ready';
+        } catch (error) {
+          indexStatus = 'error';
+          indexError = error instanceof Error ? error.message : String(error);
+        }
+      })
+      .catch((err) => {
+        console.error('Index build failed:', err);
+        indexStatus = 'error';
+        indexError = err instanceof Error ? err.message : String(err);
+      });
   }
 
   // Create MCP server
@@ -58,6 +139,7 @@ export async function createServer(dbPath?: string): Promise<Server> {
   // List available tools
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [
+      indexStatusTool,
       searchOzDocsTool,
       getOzContractTool,
       getOzFunctionTool,
@@ -68,6 +150,20 @@ export async function createServer(dbPath?: string): Promise<Server> {
   // Handle tool calls
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
+
+    // Status tool always works
+    if (name === 'oz_index_status') {
+      return handleIndexStatus();
+    }
+
+    // Other tools need the index to be ready
+    if (indexStatus === 'building') {
+      return createBuildingResponse(name);
+    }
+
+    if (indexStatus === 'error' || !db) {
+      return createErrorResponse(name);
+    }
 
     try {
       switch (name) {
@@ -110,7 +206,9 @@ export async function createServer(dbPath?: string): Promise<Server> {
 
   // Clean up on close
   server.onclose = () => {
-    db.close();
+    if (db) {
+      db.close();
+    }
   };
 
   return server;
